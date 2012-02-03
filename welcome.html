@@ -1,0 +1,10 @@
+<!doctype html>
+<title>COMING... LATER</title>
+<p>Welcome, {{name}}! Have a seat and relax.</p>
+
+<p>Current members: {{members}}</p>
+
+<form method="POST" action="../logout/">
+<input type="hidden" name="_csrf" value="{{csrf}}">
+<input type="submit" value="Logout">
+</form>

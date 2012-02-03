@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Login</title>
+<style>
+label { display: inline-block; width: 5em; }
+</style>
+<form method="POST" action="login/">{{.section msg}}<strong>{{msg}}</strong>{{.end}}<br>
+<label for="name">Name:</label> <input id="name" name="name"{{.section name}} value="{{name}}"{{.or}} autofocus{{.end}}><br>
+<label for="pass">Passphrase:</label> <input id="pass" name="pass" type="password"{{.section pass}} autofocus{{.end}}><br>
+<input type="hidden" name="_csrf" value="{{csrf}}">
+<input type="submit" value="Login">
+</form>
