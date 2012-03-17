@@ -5,8 +5,7 @@ var bcrypt = require('bcrypt'),
     RedisStore = require('connect-redis')(connect),
     parseURL = require('url').parse;
 
-// disable uploads
-delete connect.bodyParser.parse['multipart/form-data'];
+var SECRET = 'fgsfds';
 
 var store = new RedisStore;
 
@@ -19,116 +18,149 @@ var escape = connect.utils.escape;
 var headers = {
 	'Content-Type': 'text-html; charset=UTF-8',
 	'Expires': 'Thu, 01 Jan 1970 00:00:00 GMT',
-	'Cache-Control': 'no-cache',
+	'Cache-Control': 'no-cache, no-store',
 };
 
 function render(resp, template, context) {
 	template.render(context, function (frag) { resp.write(frag); });
 }
 
-var server = connect.createServer(
-	connect.cookieParser(),
-	connect.session({store: store, secret: 'fgsfds'}),
-	connect.bodyParser(),
-	connect.csrf(),
-	//connect.static(__dirname + '/www')
-	function (req, resp, next) {
-		var url = parseURL(req.url, true);
-		if (req.method == 'GET') {
-			if (req.session.auth) {
-				var name = req.session.auth.name;
-				if (url.pathname == '/welcome/') {
-					getMembers(function (err, members) {
-						if (err) {
-							console.error(err);
-							members = ['<error>'];
-						}
-						var info = {name: req.session.auth.name, csrf: req.session._csrf, members: members.join(', ')};
-						resp.writeHead(200, headers);
-						render(resp, welcomeTemplate, info);
-						resp.end();
-					});
-					return;
-				}
-				else if (url.pathname == '/') {
-					resp.writeHead(303, {Location: 'welcome/'});
-					resp.end();
-					return;
-				}
-			}
-			else {
-				var lastName = url.query.name;
-				var info = {csrf: req.session._csrf};
-				if (url.pathname == '/') {
-					if (lastName) {
-						info.msg = 'Invalid login.';
-						info.name = lastName;
-						info.pass = true;
-					}
-					resp.writeHead(200, headers);
-					render(resp, indexTemplate, info);
-					resp.end();
-					return;
-				}
-				else if (url.pathname == '/join/' && url.query.invite) {
-					info.invite = url.query.invite;
-					resp.writeHead(200, headers);
-					render(resp, joinTemplate, info);
-					resp.end();
-					return;
-				}
-			}
+var server = connect()
+	.use(connect.cookieParser(SECRET))
+	.use(connect.session({store: store, secret: SECRET}))
+	.use(connect.bodyParser())
+	.use(connect.csrf());
+
+var ROUTER = {get: [], post: []};
+
+server.use(function (req, resp, next) {
+	var routes = ROUTER[req.method.toLowerCase()];
+	if (!routes)
+		return next();
+	var url = parseURL(req.url, true);
+	tryRoutes.call({req: req, resp: resp, next: next, url: url, routes: routes}, 0);
+});
+
+function tryRoutes(i) {
+	var routes = this.routes, url = this.url, req = this.req;
+	for (; i < routes.length; i++) {
+		var route = routes[i];
+		if (route.path !== url.pathname)
+			continue;
+
+		if (route.noAuth || req.session.auth) {
+			req.url = url;
+			var next = tryRoutes.bind(this, i + 1);
+			route.func(req, this.resp, next);
+			return;
 		}
-		else if (req.method == 'POST') {
-			var name = req.body.name, pass = req.body.pass;
-			if (url.pathname == '/join/') {
-				if (pass !== req.body.again)
-					return resp.end('Passwords do not match.');
-				createLogin(name, pass, req.body.invite, function (err, id) {
-					if (err)
-						return resp.end(err);
-					req.session.auth = {id: id, name: name};
-					resp.writeHead(303, {Location: '../welcome/'});
-					resp.end();
-				});
-				return;
-			}
-			else if (url.pathname == '/login/') {
-				checkLogin(name, pass, function (err, login) {
-					if (err)
-						return resp.end(err);
-					var dest;
-					if (login) {
-						// should we regenerate here?
-						req.session.auth = login;
-						dest = '../welcome/';
-					}
-					else {
-						dest = '../?name=' + encodeURIComponent(req.body.name);
-					}
-					resp.writeHead(303, {Location: dest});
-					resp.end();
-				});
-				return;
-			}
-			else if (url.pathname == '/logout/') {
-				req.session.destroy(function (err) {
-					if (err) {
-						resp.writeHead(500);
-						resp.end("Couldn't log out.");
-						console.error(err);
-					}
-					else {
-						resp.writeHead(303, {Location: '..'});
-						resp.end();
-					}
-				});
-				return;
-			}
-		}
-		next();
 	}
-);
+	this.next();
+}
+
+function routeGet(path, opts, func) {
+	if (!func)
+		opts = {func: opts};
+	else
+		opts.func = func;
+	opts.path = path;
+	ROUTER.get.push(opts);
+}
+
+function routePost(path, opts, func) {
+	if (!func)
+		opts = {func: opts};
+	else
+		opts.func = func;
+	opts.path = path;
+	ROUTER.post.push(opts);
+}
+
+routeGet('/welcome/', function (req, resp) {
+	getMembers(function (err, members) {
+		if (err) {
+			console.error(err);
+			members = ['<error>'];
+		}
+		var info = {name: req.session.auth.name, csrf: req.session._csrf, members: members.join(', ')};
+		resp.writeHead(200, headers);
+		render(resp, welcomeTemplate, info);
+		resp.end();
+	});
+});
+
+routeGet('/', function (req, resp) {
+	resp.writeHead(303, {Location: 'welcome/'});
+	resp.end();
+});
+
+routeGet('/', {noAuth: true}, function (req, resp) {
+	var lastName = req.url.query.name;
+	var info = {csrf: req.session._csrf};
+	if (lastName) {
+		info.msg = 'Invalid login.';
+		info.name = lastName;
+		info.pass = true;
+	}
+	resp.writeHead(200, headers);
+	render(resp, indexTemplate, info);
+	resp.end();
+});
+
+routeGet('/join/', {noAuth: true}, function (req, resp, next) {
+	if (!req.url.query.invite)
+		return next();
+	var info = {csrf: req.session._csrf};
+	info.invite = req.url.query.invite;
+	resp.writeHead(200, headers);
+	render(resp, joinTemplate, info);
+	resp.end();
+});
+
+routePost('/join/', {noAuth: true}, function (req, resp) {
+	var name = req.body.name, pass = req.body.pass;
+	if (pass !== req.body.again)
+		return resp.end('Passwords do not match.');
+	createLogin(name, pass, req.body.invite, function (err, id) {
+		if (err)
+			return resp.end(err);
+		req.session.auth = {id: id, name: name};
+		resp.writeHead(303, {Location: '../welcome/'});
+		resp.end();
+	});
+});
+
+routePost('/login/', {noAuth: true}, function (req, resp) {
+	var name = req.body.name, pass = req.body.pass;
+	checkLogin(name, pass, function (err, login) {
+		if (err)
+			return resp.end(err);
+		var dest;
+		if (login) {
+			// should we regenerate here?
+			req.session.auth = login;
+			dest = '../welcome/';
+		}
+		else {
+			dest = '../?name=' + encodeURIComponent(name);
+		}
+		resp.writeHead(303, {Location: dest});
+		resp.end();
+	});
+});
+
+routePost('/logout/', function (req, resp) {
+	req.session.destroy(function (err) {
+		if (err) {
+			resp.writeHead(500);
+			resp.end("Couldn't log out.");
+			console.error(err);
+			return;
+		}
+		resp.writeHead(303, {Location: '..'});
+		resp.end();
+	});
+});
 
 function checkLogin(name, pass, cb) {
 	var r = store.client;
