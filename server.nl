@@ -21,6 +21,8 @@ var headers = {
 	'Cache-Control': 'no-cache, no-store',
 };
 
+var NAME_REGEXP = /^[\w '\-]{3,30}$/;
+
 function render(resp, template, context) {
 	template.render(context, function (frag) { resp.write(frag); });
 }
@@ -162,24 +164,80 @@ routePost('/logout/', function (req, resp) {
 	});
 });
 
+function loginAttemptDelay(tries) {
+	return 50 * Math.pow(2, parseInt(tries, 10) || 0);
+}
+
 function checkLogin(name, pass, cb) {
+	if (!name.match(NAME_REGEXP))
+		return false;
+
+	var r = store.client;
+
+	var ip = '127.0.0.1'; // XXX
+	tries <- r.get('identity:tries:' + ip);
+	var delay = loginAttemptDelay(tries);
+
+	// acquire lock for this login attempt
+	var lockKey = 'identity:try:' + ip;
+	var now = new Date().getTime();
+	acquired <- r.setnx(lockKey, now + delay + 1000);
+	if (acquired) {
+		_ <- r.expire(lockKey, now + delay + 60000);
+		res <- _delayLoginAttempt(name, pass, ip);
+		return res;
+	}
+
+	// didn't obtain, check if expired
+	expiry <- r.get(lockKey);
+	expiry = parseInt(expiry, 10);
+	var now = new Date().getTime();
+	if (!expiry || expiry >= now)
+		return false; // just have them retry later
+
+	// lock is expired, try to reset
+	old <- r.getset(lockKey, now + delay + 1000);
+	old = parseInt(old, 10);
+	if (!old || old >= now)
+		return false; // retry later
+	// we obtained the refreshed lock
+	_ <- r.expire(lockKey, now + delay + 60000);
+	_delayLoginAttempt(name, pass, ip, cb);
+}
+
+function _delayLoginAttempt(name, pass, ip, cb) {
+	_doLoginAttempt(name, pass, function (err, result) {
+		if (err || !result) {
+			if (err)
+				console.error("During login attempt:", err);
+			var r = store.client;
+			r.incr('identity:tries:' + ip, function (err, tries) {
+				if (err)
+					throw err; // catastrophic
+				setTimeout(cb.bind(null, null, false), loginAttemptDelay(tries));
+			});
+		}
+		else
+			cb(null, result);
+	});
+}
+
+function _doLoginAttempt(name, pass, cb) {
 	var r = store.client;
 	id <- r.hget('identity:names', name);
 	if (!id)
 		return false;
 	id = parseInt(id, 10);
 	hash <- r.hget('identity:passes', id);
-	if (!hash) {
-		console.warn("Password missing for user " + name);
-		return false;
-	}
+	if (!hash)
+		throw "Password missing for user " + name;
 	res <- bcrypt.compare(pass, hash);
 	return res ? {id: id, name: name} : false;
 }
 
 function createLogin(name, pass, token, cb) {
 	var r = store.client;
-	if (!name.match(/^[\w '\-]{3,30}$/))
+	if (!name.match(NAME_REGEXP))
 		throw "Invalid name.";
 	if (!pass || pass == name)
 		throw "Bad password.";
